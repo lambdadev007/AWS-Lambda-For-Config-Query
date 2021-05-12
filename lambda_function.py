@@ -71,30 +71,41 @@ def lambda_handler(event, context):
 
     # Query for the AWS Config discovery
     configResponse = configClient.select_resource_config(
-        Expression="SELECT resourceId, resourceType, configuration.instanceType, configuration.placement.tenancy, configuration.imageId, availabilityZone WHERE resourceType = 'AWS::EC2::Instance'"
+        Expression="SELECT resourceId, resourceType,accountId,configuration.state.value, configuration.state.name,tags,configuration.networkinterfaces WHERE resourceType IN ('AWS::EC2::Instance','AWS::EC2::Volume','AWS::EC2::VPC','AWS::ElasticLoadBalancingV2::LoadBalancer','AWS::ElasticLoadBalancing::LoadBalancer','AWS::Lambda::Function','AWS::S3::Bucket')"
     )
 
     # This is the name for the S3 bucket
     s3Bucket = 'config-response-bucket-2'
 
     # This is the name of the json file
-    objectName = 'Results-'+ str(time.time()) +'.csv'
+    fileName = 'Results-'+ str(time.strftime("%Y-%m-%d_%H-%M-%S"))
+    jsonObjectName = fileName +'.json'
 
     # This is the python object to hold the results of the query
     objectData = configResponse
     # Try Catch to put object in S3
-
-    jsonData = raw_to_json(objectData)
-
-    json_to_csv('/tmp', jsonData, objectName)
-
     try:
-        s3Client.upload_file('/tmp/' + objectName, Bucket=s3Bucket, Key=objectName)
+        s3Client.put_object(Body=json.dumps(objectData, indent=4, sort_keys=True),
+                            Bucket=s3Bucket, Key=jsonObjectName)
     except Exception as e:
         print(e)
     else:
-        print("Json object has been added to S3")
+        print("JSON object has been added to S3")
 
+    # This is the name of the csv file
+    csvObjectName = fileName +'.csv'
+
+    jsonData = raw_to_json(objectData)
+
+    json_to_csv('/tmp', jsonData, csvObjectName)
+
+    try:
+        s3Client.upload_file('/tmp/' + csvObjectName, Bucket=s3Bucket, Key=csvObjectName)
+    except Exception as e:
+        print(e)
+    else:
+        print("CSV object has been added to S3")
+   
     # Replace sender@example.com with your "From" address.
     # This address must be verified with Amazon SES.
     SENDER = "poberezhetspavlo@gmail.com"
@@ -110,14 +121,17 @@ def lambda_handler(event, context):
     # Using the file name, create a new file location for the lambda. This has to
     # be in the tmp dir because that's the only place lambdas let you store up to
     # 500mb of stuff, hence the '/tmp/'+ prefix
-    TMP_FILE_NAME = '/tmp/' + objectName
+    CSV_TMP_FILE_NAME = '/tmp/' + csvObjectName
+    JSON_TMP_FILE_NAME = '/tmp/' + jsonObjectName
 
     # Download the file/s from the event (extracted above) to the tmp location
-    s3Client.download_file(s3Bucket, objectName, TMP_FILE_NAME)
+    s3Client.download_file(s3Bucket, csvObjectName, CSV_TMP_FILE_NAME)
+    s3Client.download_file(s3Bucket, jsonObjectName, JSON_TMP_FILE_NAME)
 
     # Make explicit that the attachment will have the tmp file path/name. You could just
     # use the TMP_FILE_NAME in the statments below if you'd like.
-    ATTACHMENT = TMP_FILE_NAME
+    ATTACHMENT_1 = CSV_TMP_FILE_NAME
+    ATTACHMENT_2 = JSON_TMP_FILE_NAME
 
     # The email body for recipients with non-HTML email clients.
     BODY_TEXT = "Hello,\r\nPlease see the attached file related to AWS Config."
@@ -156,19 +170,23 @@ def lambda_handler(event, context):
     msg_body.attach(htmlpart)
 
     # Define the attachment part and encode it using MIMEApplication.
-    att = MIMEApplication(open(ATTACHMENT, 'rb').read())
+    att_1 = MIMEApplication(open(ATTACHMENT_1, 'rb').read())
+    att_2 = MIMEApplication(open(ATTACHMENT_2, 'rb').read())
 
     # Add a header to tell the email client to treat this part as an attachment,
     # and to give the attachment a name.
-    att.add_header('Content-Disposition', 'attachment',
-                   filename=os.path.basename(ATTACHMENT))
+    att_1.add_header('Content-Disposition', 'attachment',
+                   filename=os.path.basename(ATTACHMENT_1))
+    att_2.add_header('Content-Disposition', 'attachment',
+                   filename=os.path.basename(ATTACHMENT_2))
 
     # Attach the multipart/alternative child container to the multipart/mixed
     # parent container.
     msg.attach(msg_body)
 
     # Add the attachment to the parent container.
-    msg.attach(att)
+    msg.attach(att_1)
+    msg.attach(att_2)
 
     try:
         # Provide the contents of the email.
